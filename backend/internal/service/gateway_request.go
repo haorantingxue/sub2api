@@ -45,7 +45,7 @@ var (
 )
 
 // SessionContext 粘性会话上下文，用于区分不同来源的请求。
-// 仅在 GenerateSessionHash 第 3 级 fallback（消息内容 hash）时混入，
+// 在 GenerateSessionHash fallback 中提供客户端区分因子，
 // 避免不同用户发送相同消息产生相同 hash 导致账号集中。
 type SessionContext struct {
 	ClientIP  string
