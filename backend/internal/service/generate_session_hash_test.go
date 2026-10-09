@@ -94,32 +94,34 @@ func TestGenerateSessionHash_MetadataHasHighestPriority(t *testing.T) {
 
 func TestGenerateSessionHash_SystemPlusMessages(t *testing.T) {
 	svc := &GatewayService{}
-	withSystem := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello")}, ""), nil)
-	withoutSystem := mustParseSessionHashRequest(t, anthropicSessionBody(nil, []any{msg("user", "hello")}, ""), nil)
+	ctx := &SessionContext{ClientIP: "1.2.3.4", APIKeyID: 1}
+	withSystem := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello")}, ""), ctx)
+	withoutSystem := mustParseSessionHashRequest(t, anthropicSessionBody(nil, []any{msg("user", "hello")}, ""), ctx)
 
 	h1 := svc.GenerateSessionHash(withSystem)
 	h2 := svc.GenerateSessionHash(withoutSystem)
 	require.NotEmpty(t, h1)
 	require.NotEmpty(t, h2)
-	require.NotEqual(t, h1, h2, "system prompt should be part of digest, producing different hash")
+	require.Equal(t, h1, h2, "Anthropic fallback should not depend on system content")
 }
 
 func TestGenerateSessionHash_SystemOnlyProducesHash(t *testing.T) {
 	svc := &GatewayService{}
-	parsed := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", nil, ""), nil)
+	parsed := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", nil, ""), &SessionContext{ClientIP: "1.2.3.4", APIKeyID: 1})
 
 	hash := svc.GenerateSessionHash(parsed)
-	require.NotEmpty(t, hash, "system prompt alone should produce a hash as part of full digest")
+	require.NotEmpty(t, hash, "system prompt with stable client context should produce a hash")
 }
 
 func TestGenerateSessionHash_DifferentSystemsSameMessages(t *testing.T) {
 	svc := &GatewayService{}
-	parsed1 := mustParseSessionHashRequest(t, anthropicSessionBody("You are assistant A.", []any{msg("user", "hello")}, ""), nil)
-	parsed2 := mustParseSessionHashRequest(t, anthropicSessionBody("You are assistant B.", []any{msg("user", "hello")}, ""), nil)
+	ctx := &SessionContext{ClientIP: "1.2.3.4", APIKeyID: 1}
+	parsed1 := mustParseSessionHashRequest(t, anthropicSessionBody("You are assistant A.", []any{msg("user", "hello")}, ""), ctx)
+	parsed2 := mustParseSessionHashRequest(t, anthropicSessionBody("You are assistant B.", []any{msg("user", "hello")}, ""), ctx)
 
 	h1 := svc.GenerateSessionHash(parsed1)
 	h2 := svc.GenerateSessionHash(parsed2)
-	require.NotEqual(t, h1, h2, "different system prompts with same messages should produce different hashes")
+	require.Equal(t, h1, h2, "Anthropic fallback should not depend on system content")
 }
 
 func TestGenerateSessionHash_SameSystemSameMessages(t *testing.T) {
@@ -133,14 +135,15 @@ func TestGenerateSessionHash_SameSystemSameMessages(t *testing.T) {
 	require.Equal(t, h1, h2, "same system + same messages should produce identical hash")
 }
 
-func TestGenerateSessionHash_DifferentMessagesProduceDifferentHash(t *testing.T) {
+func TestGenerateSessionHash_AnthropicDifferentMessagesKeepStableHash(t *testing.T) {
 	svc := &GatewayService{}
-	parsed1 := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "help me with Go")}, ""), nil)
-	parsed2 := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "help me with Python")}, ""), nil)
+	ctx := &SessionContext{ClientIP: "1.2.3.4", APIKeyID: 1}
+	parsed1 := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "help me with Go")}, ""), ctx)
+	parsed2 := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "help me with Python")}, ""), ctx)
 
 	h1 := svc.GenerateSessionHash(parsed1)
 	h2 := svc.GenerateSessionHash(parsed2)
-	require.NotEqual(t, h1, h2, "same system but different messages should produce different hashes")
+	require.Equal(t, h1, h2, "Anthropic fallback should not depend on message content")
 }
 
 func TestGenerateSessionHash_DifferentSessionContextProducesDifferentHash(t *testing.T) {
@@ -196,7 +199,7 @@ func TestGenerateSessionHash_NilSessionContextBackwardCompatible(t *testing.T) {
 	require.Equal(t, h1, h2, "nil SessionContext should produce same hash as no SessionContext")
 }
 
-func TestGenerateSessionHash_ContinuousConversation_HashChangesWithMessages(t *testing.T) {
+func TestGenerateSessionHash_AnthropicContinuousConversationHashStable(t *testing.T) {
 	svc := &GatewayService{}
 	ctx := &SessionContext{ClientIP: "1.2.3.4", UserAgent: "test", APIKeyID: 1}
 	round1 := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello")}, ""), ctx)
@@ -209,9 +212,9 @@ func TestGenerateSessionHash_ContinuousConversation_HashChangesWithMessages(t *t
 	require.NotEmpty(t, h1)
 	require.NotEmpty(t, h2)
 	require.NotEmpty(t, h3)
-	require.NotEqual(t, h1, h2, "different conversation rounds should produce different hashes")
-	require.NotEqual(t, h2, h3, "each new round should produce a different hash")
-	require.NotEqual(t, h1, h3, "round 1 and round 3 should differ")
+	require.Equal(t, h1, h2, "same Anthropic client should retain a stable hash as messages grow")
+	require.Equal(t, h2, h3, "same Anthropic client should retain a stable hash as messages grow")
+	require.Equal(t, h1, h3, "same Anthropic client should retain a stable hash as messages grow")
 }
 
 func TestGenerateSessionHash_ContinuousConversation_SameRoundSameHash(t *testing.T) {
@@ -287,7 +290,7 @@ func TestGenerateSessionHash_MessageRollback(t *testing.T) {
 
 	hOrig := svc.GenerateSessionHash(original)
 	hRollback := svc.GenerateSessionHash(rollback)
-	require.NotEqual(t, hOrig, hRollback, "rollback with different last message should produce different hash")
+	require.Equal(t, hOrig, hRollback, "Anthropic fallback should not depend on message rollback content")
 }
 
 func TestGenerateSessionHash_MessageRollbackSameContent(t *testing.T) {
@@ -319,7 +322,7 @@ func TestGenerateSessionHash_SameSystemSameMessageDifferentContext(t *testing.T)
 
 	h1 := svc.GenerateSessionHash(user1)
 	h2 := svc.GenerateSessionHash(user2)
-	require.NotEqual(t, h1, h2, "CRITICAL: same system+messages but different users should get different hashes")
+	require.NotEqual(t, h1, h2, "different SessionContext values should get different hashes")
 }
 
 func TestGenerateSessionHash_SessionContext_IPDifference(t *testing.T) {
@@ -334,7 +337,7 @@ func TestGenerateSessionHash_SessionContext_IPDifference(t *testing.T) {
 	require.NotEqual(t, h1, h2, "different IP should produce different hash")
 }
 
-func TestGenerateSessionHash_SessionContext_UADifference(t *testing.T) {
+func TestGenerateSessionHash_AnthropicSessionContext_UADifferenceIgnored(t *testing.T) {
 	svc := &GatewayService{}
 	body := anthropicSessionBody(nil, []any{msg("user", "test")}, "")
 	base := func(ua string) *ParsedRequest {
@@ -343,7 +346,7 @@ func TestGenerateSessionHash_SessionContext_UADifference(t *testing.T) {
 
 	h1 := svc.GenerateSessionHash(base("Mozilla/5.0"))
 	h2 := svc.GenerateSessionHash(base("curl/7.0"))
-	require.NotEqual(t, h1, h2, "different User-Agent should produce different hash")
+	require.Equal(t, h1, h2, "Anthropic stable fallback intentionally ignores User-Agent")
 }
 
 func TestGenerateSessionHash_SessionContext_UAVersionNoiseIgnored(t *testing.T) {
@@ -396,7 +399,7 @@ func TestGenerateSessionHash_MultipleUsersSameFirstMessage(t *testing.T) {
 	require.Len(t, hashes, 5, "5 different users should produce 5 unique hashes")
 }
 
-func TestGenerateSessionHash_SameUserGrowingConversation(t *testing.T) {
+func TestGenerateSessionHash_AnthropicSameUserGrowingConversationStable(t *testing.T) {
 	svc := &GatewayService{}
 	ctx := &SessionContext{ClientIP: "1.2.3.4", UserAgent: "browser", APIKeyID: 42}
 	messages := []any{
@@ -410,7 +413,7 @@ func TestGenerateSessionHash_SameUserGrowingConversation(t *testing.T) {
 		h := svc.GenerateSessionHash(parsed)
 		require.NotEmpty(t, h, "round %d hash should not be empty", round)
 		if prevHash != "" {
-			require.NotEqual(t, prevHash, h, "round %d hash should differ from previous round", round)
+			require.Equal(t, prevHash, h, "round %d hash should retain stable client fallback", round)
 		}
 		prevHash = h
 		h2 := svc.GenerateSessionHash(parsed)
@@ -418,7 +421,7 @@ func TestGenerateSessionHash_SameUserGrowingConversation(t *testing.T) {
 	}
 }
 
-func TestGenerateSessionHash_MultipleUserMessages(t *testing.T) {
+func TestGenerateSessionHash_AnthropicMultipleUserMessagesKeepStableHash(t *testing.T) {
 	svc := &GatewayService{}
 	ctx := &SessionContext{ClientIP: "1.2.3.4", UserAgent: "test", APIKeyID: 1}
 	parsed := mustParseSessionHashRequest(t, anthropicSessionBody(nil, []any{msg("user", "first"), msg("user", "second"), msg("user", "third"), msg("user", "fourth"), msg("user", "fifth")}, ""), ctx)
@@ -427,10 +430,10 @@ func TestGenerateSessionHash_MultipleUserMessages(t *testing.T) {
 
 	parsed2 := mustParseSessionHashRequest(t, anthropicSessionBody(nil, []any{msg("user", "first"), msg("user", "CHANGED"), msg("user", "third"), msg("user", "fourth"), msg("user", "fifth")}, ""), ctx)
 	h2 := svc.GenerateSessionHash(parsed2)
-	require.NotEqual(t, h, h2, "changing any message should change the hash")
+	require.Equal(t, h, h2, "Anthropic fallback should not depend on message content")
 }
 
-func TestGenerateSessionHash_MessageOrderMatters(t *testing.T) {
+func TestGenerateSessionHash_AnthropicMessageOrderDoesNotChangeFallbackHash(t *testing.T) {
 	svc := &GatewayService{}
 	ctx := &SessionContext{ClientIP: "1.2.3.4", UserAgent: "test", APIKeyID: 1}
 	parsed1 := mustParseSessionHashRequest(t, anthropicSessionBody(nil, []any{msg("user", "alpha"), msg("user", "beta")}, ""), ctx)
@@ -438,7 +441,7 @@ func TestGenerateSessionHash_MessageOrderMatters(t *testing.T) {
 
 	h1 := svc.GenerateSessionHash(parsed1)
 	h2 := svc.GenerateSessionHash(parsed2)
-	require.NotEqual(t, h1, h2, "message order should affect the hash")
+	require.Equal(t, h1, h2, "Anthropic fallback should not depend on message order")
 }
 
 func TestGenerateSessionHash_StructuredContent(t *testing.T) {
@@ -516,7 +519,7 @@ func TestGenerateSessionHash_LongConversation(t *testing.T) {
 	moreMessages := append(append([]any{}, messages...), msg("user", "one more"), msg("assistant", "ok"))
 	parsed2 := mustParseSessionHashRequest(t, anthropicSessionBody("System prompt", moreMessages, ""), ctx)
 	h2 := svc.GenerateSessionHash(parsed2)
-	require.NotEqual(t, h, h2, "adding more messages to long conversation should change hash")
+	require.Equal(t, h, h2, "adding more messages should not change stable client fallback hash")
 }
 
 func TestGenerateSessionHash_GeminiContentsProducesHash(t *testing.T) {

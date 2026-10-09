@@ -20,6 +20,7 @@ import (
 	"unsafe"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
@@ -922,7 +923,22 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 		return hash
 	}
 
-	// 3. 最后 fallback: 使用 session上下文 + system + 所有消息的完整摘要串
+	// 3. Anthropic fallback: 使用请求上下文（IP + APIKeyID）生成稳定 hash。
+	// 旧实现将 system + 全部 messages 纳入摘要，导致 Hermes 等没有稳定
+	// 会话标识的客户端在多轮对话中每轮生成新的 sessionHash。
+	// 只对 Anthropic Messages 路径启用；Gemini 仍保留其内容摘要逻辑，避免
+	// 改变 Gemini digest-chain 会话匹配语义。
+	if parsed.protocol == domain.PlatformAnthropic && parsed.SessionContext != nil {
+		contextKey := parsed.SessionContext.ClientIP + ":" + strconv.FormatInt(parsed.SessionContext.APIKeyID, 10)
+		hash := s.hashContent(contextKey)
+		slog.Info("sticky.hash_source",
+			"source", "stable_client_fallback",
+			"hash", hash,
+		)
+		return hash
+	}
+
+	// 4. 其他协议的 fallback: 使用 session上下文 + system + 全部消息摘要
 	var combined strings.Builder
 	// 混入请求上下文区分因子，避免不同用户相同消息产生相同 hash
 	if parsed.SessionContext != nil {
